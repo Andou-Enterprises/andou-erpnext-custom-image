@@ -2,19 +2,15 @@ ARG PYTHON_VERSION=3.11.6
 ARG DEBIAN_BASE=bookworm
 FROM python:${PYTHON_VERSION}-slim-${DEBIAN_BASE} AS base
 
-COPY resources/nginx-template.conf /templates/nginx/frappe.conf.template
-COPY resources/nginx-entrypoint.sh /usr/local/bin/nginx-entrypoint.sh
-
 ARG WKHTMLTOPDF_VERSION=0.12.6.1-3
 ARG WKHTMLTOPDF_DISTRO=bookworm
 ARG NODE_VERSION=18.18.2
 ENV NVM_DIR=/home/frappe/.nvm
 ENV PATH=${NVM_DIR}/versions/node/v${NODE_VERSION}/bin/:${PATH}
 
-RUN adduser --disabled-password --gecos '' frappe
-RUN usermod -s /bin/bash frappe
-
-RUN apt-get update && apt-get install --no-install-recommends -y \
+RUN useradd -ms /bin/bash frappe \
+    && apt-get update \
+    && apt-get install --no-install-recommends -y \
     curl \
     git \
     vim \
@@ -37,7 +33,6 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     postgresql-client \
     # For healthcheck
     wait-for-it \
-    sudo \
     jq \
     # NodeJS
     && mkdir -p ${NVM_DIR} \
@@ -70,21 +65,17 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
     && chown -R frappe:frappe /etc/nginx/nginx.conf \
     && chown -R frappe:frappe /var/log/nginx \
     && chown -R frappe:frappe /var/lib/nginx \
-    && chown -R frappe:frappe /run/nginx.pid \
-    && chmod 755 /usr/local/bin/nginx-entrypoint.sh \
-    && chmod 644 /templates/nginx/frappe.conf.template
+    && chown -R frappe:frappe /run/nginx.pid
+
+COPY resources/nginx-template.conf /templates/nginx/frappe.conf.template
+COPY resources/nginx-entrypoint.sh /usr/local/bin/nginx-entrypoint.sh
 
 FROM base AS builder
 
-RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
     # For frappe framework
     wget \
-    #for building arm64 binaries
-    libcairo2-dev \
-    libpango1.0-dev \
-    libjpeg-dev \
-    libgif-dev \
-    librsvg2-dev \
     # For psycopg2
     libpq-dev \
     # Other
@@ -102,38 +93,42 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install --no-instal
     # For pandas
     gcc \
     build-essential \
-    libbz2-dev
-
-# apps.json includes
-ARG APPS_JSON_BASE64
-RUN if [ -n "${APPS_JSON_BASE64}" ]; then \
-    mkdir /opt/frappe && echo "${APPS_JSON_BASE64}" | base64 -d > /opt/frappe/apps.json; \
-  fi
-
-RUN usermod -aG sudo frappe
-RUN echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
+    libbz2-dev \
+    sudo \
+    && rm -rf /var/lib/apt/lists/*
+    
+RUN groupadd -g 1000 frappe \
+    && useradd -ms /bin/bash -u 1000 -g 1000 frappe \
+    && usermod -a -G sudo frappe \
+    && echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
 USER frappe
 
 ARG FRAPPE_BRANCH=version-15
 ARG FRAPPE_PATH=https://github.com/frappe/frappe
-RUN export APP_INSTALL_ARGS="" && \
-  if [ -n "${APPS_JSON_BASE64}" ]; then \
-    export APP_INSTALL_ARGS="--apps_path=/opt/frappe/apps.json"; \
-  fi && \
-  bench init ${APP_INSTALL_ARGS}\
-    --frappe-branch=${FRAPPE_BRANCH} \
-    --frappe-path=${FRAPPE_PATH} \
-    --no-procfile \
-    --no-backups \
-    --skip-redis-config-generation \
-    --verbose \
-    /home/frappe/frappe-bench && \
+ARG ERPNEXT_REPO=https://github.com/frappe/erpnext
+ARG ERPNEXT_BRANCH=version-15
+RUN bench init \
+  --frappe-branch=${FRAPPE_BRANCH} \
+  --frappe-path=${FRAPPE_PATH} \
+  --no-procfile \
+  --no-backups \
+  --skip-redis-config-generation \
+  --verbose \
+  /home/frappe/frappe-bench && \
   cd /home/frappe/frappe-bench && \
+  bench get-app --branch=${ERPNEXT_BRANCH} --resolve-deps erpnext ${ERPNEXT_REPO} && \
+  bench get-app --branch=version-15 --resolve-deps payments https://github.com/frappe/payments.git && \
+  bench get-app --branch=version-15 --resolve-deps webshop https://github.com/frappe/webshop.git && \
   echo "{}" > sites/common_site_config.json && \
   find apps -mindepth 1 -path "*/.git" | xargs rm -fr
 
-FROM base AS backend
+FROM base AS erpnext
+
+RUN groupadd -g 1000 frappe \
+    && useradd -ms /bin/bash -u 1000 -g 1000 frappe \
+    && usermod -a -G sudo frappe \
+    && echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
 USER frappe
 

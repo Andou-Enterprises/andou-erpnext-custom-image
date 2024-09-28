@@ -94,7 +94,13 @@ RUN apt-get update \
     gcc \
     build-essential \
     libbz2-dev \
+    sudo \
     && rm -rf /var/lib/apt/lists/*
+    
+RUN groupadd -g 1000 frappe \
+    && useradd -ms /bin/bash -u 1000 -g 1000 frappe \
+    && usermod -a -G sudo frappe \
+    && echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
 USER frappe
 
@@ -112,10 +118,17 @@ RUN bench init \
   /home/frappe/frappe-bench && \
   cd /home/frappe/frappe-bench && \
   bench get-app --branch=${ERPNEXT_BRANCH} --resolve-deps erpnext ${ERPNEXT_REPO} && \
+  bench get-app --branch=version-15 --resolve-deps payments https://github.com/frappe/payments.git && \
+  bench get-app --branch=version-15 --resolve-deps webshop https://github.com/frappe/webshop.git && \
   echo "{}" > sites/common_site_config.json && \
   find apps -mindepth 1 -path "*/.git" | xargs rm -fr
 
 FROM base AS erpnext
+
+RUN groupadd -g 1000 frappe \
+    && useradd -ms /bin/bash -u 1000 -g 1000 frappe \
+    && usermod -a -G sudo frappe \
+    && echo '%sudo ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
 USER frappe
 
